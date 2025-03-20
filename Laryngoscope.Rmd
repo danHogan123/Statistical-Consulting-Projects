@@ -1,0 +1,316 @@
+---
+title: "Untitled"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-02-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r data-import}
+library(dplyr)
+library(ggplot2)
+library(tableone)
+library(effsize)
+library(MASS)
+library(lmtest)
+library(car)
+library(pscl)
+library(ResourceSelection)
+library(glmnet)
+
+laryngoscope_data <- read.csv("C:/Users/dapah/Downloads/Laryngoscope.csv")
+```
+
+
+
+## Data Exploration:
+First, I'd like to look at the prescreening information collected. You randomized each participant into an intubation group.
+So lets verify the groups are as alike as possible. I'll start by showing the distribution of how many participants we have for 
+each baseline attribute by intubation group. Then I'm just showing the averages for each attribute. aka Summary Statistics
+```{r Check Baselines}
+
+
+# Count and proportion for categorical variables
+laryngoscope_data %>%
+  group_by(Randomization) %>%
+  summarise(
+    count = n(),
+    Male = sum(gender == 1, na.rm = TRUE),
+    Female = sum(gender == 0, na.rm = TRUE),
+    ASA_1 = sum(asa == 1, na.rm = TRUE),
+    ASA_2 = sum(asa == 2, na.rm = TRUE),
+    ASA_3 = sum(asa == 3, na.rm = TRUE),
+    ASA_4 = sum(asa == 4, na.rm = TRUE),
+    Mallampati_1 = sum(Mallampati == 1, na.rm = TRUE),
+    Mallampati_2 = sum(Mallampati == 2, na.rm = TRUE),
+    Mallampati_3 = sum(Mallampati == 3, na.rm = TRUE),
+    Mallampati_4 = sum(Mallampati == 4, na.rm = TRUE)
+  )
+
+
+
+laryngoscope_data %>%
+  group_by(Randomization) %>%
+  summarise(
+    Age_Mean = mean(age, na.rm = TRUE),
+    Age_SD = sd(age, na.rm = TRUE),
+    BMI_Mean = mean(BMI, na.rm = TRUE),
+    BMI_SD = sd(BMI, na.rm = TRUE)
+  )
+
+```
+# Interpretation:
+Everything appears to be in order. There aren't any participants participants with a Mallampati score of 4 in the control group.
+I'm not sure how this would impact our test. But we should be aware of this. Next we'll make sure everything appears similar.
+
+
+## Testing for Differences in Baseline Characteristics:
+Continuing, I'm use statistical tests to compare each attribute by intubation group to ensure the study's internal validity
+I'm using a t-test to  compare quantitative variables. For categorical/rating-scale variables I'm using a chi-square test if table cells are large
+or a fisher-test is any of the table's cells are small.
+```{r Testing Baselines}
+# Checking Quantitative Vars
+t.test(age ~ Randomization, data = laryngoscope_data)  # T-test (if normal)
+t.test(BMI ~ Randomization, data = laryngoscope_data)
+
+# Checking Categorical Vars
+table_asa <- table(laryngoscope_data$Randomization, laryngoscope_data$asa)
+table_asa
+fisher.test(table_asa)
+
+table_mall <- table(laryngoscope_data$Randomization, laryngoscope_data$Mallampati)
+table_mall
+fisher.test(table_mall)
+
+table_gen <- table(laryngoscope_data$Randomization, laryngoscope_data$gender)
+table_gen
+chisq.test(table_gen)
+
+# All of them look good except for our Mallampati variable
+# There is no person in the control group with Mallampati score of 4
+
+```
+# Interpretation:
+Nothing was registered as significant by any of these tests except for that earlier note. That there appears to 
+be some group differences due to the amount of participants with a Mallampati rating of 4. I wouldn't think that
+this would impact our study too much, but being aware of this is helpful for designing future studies.
+
+
+## Understanding Doctors Ease-Rating
+Here I want to see how many people succeed/ failed on the first attempt. I also want to see how this influences 
+each doctors ease-rating.
+```{r ease-s/f boxplot}
+
+# Everyone who failed on the first attempt reported that the ease was difficult
+# Is there a differnce here?
+
+
+# Counting Amount of Successes on the first attempt #
+
+laryngoscope_data %>% 
+  summarise(
+    success = sum(attempt1_S_F == 1),
+    failure = sum(attempt1_S_F == 0)
+  ) 
+
+# Looking at relation between ease and succession of first attempt
+
+laryngoscope_data %>% 
+   
+  ggplot(aes(x = factor(attempt1_S_F), y = ease, fill = factor(attempt1_S_F))) +
+  geom_boxplot() +
+    scale_x_discrete(labels = c("0" = "Failure", "1" = "Success")) +  # Custom labels
+  labs(
+    title = "Boxplot of Rating Scale by Success/Failure",
+    x = "",
+    y = "Ease Rating",
+    fill = "Success/Failure"
+  ) +
+  theme_minimal()
+```
+# Interpretation:
+11 people failed on the first attempts while the remaining 88 succeeded. Nearly all those who failed stated that the
+intubation was very difficult, which most who succeeded rated it comparatively easier. Later we'll test to see
+if this has relation to what randomization group the particiapants were in.
+
+
+## Dependence of Intubation Stlye on Success/Failure:
+We'd like to use the fisher exact test to note any differences between between intubation groups and the success rate.
+So I'll create a table to conduct this test. 
+```{r S_F Dependence}
+table_laryngoscope <- table(laryngoscope_data$Randomization, laryngoscope_data$attempt1_S_F)
+dimnames(table_laryngoscope) <- list(
+  Row_Names = c("Control", "Treatment"),  
+  Column_Names = c("no. Fail", "no. Succ") 
+)
+
+# Testing dependence of Randomization with succ/fail
+
+chisq.test(table_laryngoscope)
+fisher.test(table_laryngoscope)
+table_laryngoscope
+
+# Pval is large, fail to reject Ho
+# intubation type does not affect success rate
+
+```
+# Interpretation:
+The fisher test reported a small p-value, so don't have much evidence to suggest differing successs rate by intubation type.
+In other words there is no relation between the amount of successful/failed intubations and the intubation type.
+
+
+## Comparing Time to Intubation:
+Similarly, we want to compare intubation times for each group. For now we're only going to look at the first attempt.
+So, I will ignore all those who failed on the first attempt. To start, I'll test to see if the attempt times are normally distributed.
+If they are, I'll use a t-test to compare intubation times. If not, I'll use a wilcox test. One of our main questions is if the treatment
+will lead to faster intubation times, so lets test it out!
+```{r Testing Time}
+# sub grouping to only those who completed the first attempt
+lary <- laryngoscope_data[laryngoscope_data$attempt1_S_F == 1,]
+
+shapiro.test(lary$attempt1_time)
+# Normality test failed
+
+# Testing to see if there is a differnce of intubation times based on intubation
+# type
+# Testing to see if the intubation times are different by group
+wilcox.test(attempt1_time ~ Randomization, data = lary)
+
+# Pvalue is very small, suggesting that there is a difference in intubation time
+#
+```
+# Interpretation:
+The shapiro test reported a very low p-value, directing me towards the wilcox test (which handles non-normality). Likewise, the wilcox test
+reported a very low p-value. This suggests that there is a difference in the time to intubation based on which group the participants
+were in.
+
+## Visualizing Intubation Time
+Lets get a better picture of what the distribution of the intubation times look like. I'll also display the means and standard
+deviations for each distribution. This gives us a numerical understanding of the shape of the distributions. Then, I'll verify
+my interpretation of the two distributions by computing an effect size using the pooled-sd. This will tell us which group had a
+faster intubation times.
+```{r}
+ggplot(lary, aes(x = attempt1_time, fill = Randomization)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ Randomization, scales = "free_y") +  # Separate plots side by side
+  labs(title = "Density Plot of Attempt Time by Group",
+       x = "Attempt Time",
+       y = "Density") +
+  theme_minimal()
+
+# Shoutout STAT100
+# Reminder: lary is a subgroup where we only show those who completed 
+#the first attempt
+lary %>%
+  group_by(Randomization) %>%
+  summarise(
+    Mean = mean(attempt1_time, na.rm = TRUE),
+    SD = sd(attempt1_time, na.rm = TRUE)
+  )
+
+cohen.d(lary$attempt1_time ~ lary$Randomization)
+```
+# Interpretation:
+Visually, the distributions' shape look roughly similar. But, the control group appears to have a mean that is much smaller than
+the treatment group. Cohen's D confirms this. We get an effect size of -1.106. This tells us that the control group reported much
+faster intubation times. Maybe we should implement the new intubation method. I think this is the most important result in this rmd.
+
+
+## Predicting Success/Failure and Intubation Time
+To get a better idea how how all the baseline variables interplay with each other and out outcomes, we'll construct some models.
+First, we'll use a glm to predict S/F, because we have Bernoulli responses. Then we'll use a standard lm to predict intubation time.
+```{r S_F Model}
+# Checking what factors might predict our success in attempt1
+# Using glm because we have binomial responses
+laryngoscope_data <- laryngoscope_data[!is.na(laryngoscope_data$attempt1_S_F), ]
+
+anova_model <- aov(attempt1_S_F ~ as.factor(Mallampati)+ as.factor(asa) + as.factor(gender), data = laryngoscope_data)
+summary(anova_model)
+
+
+logit_model <- glm(attempt1_S_F ~ age+ gender + BMI + as.factor(asa) + as.factor(Mallampati) + as.factor(Randomization) , 
+                   data = laryngoscope_data, family = binomial)
+summary(logit_model)
+plot(logit_model)
+pR2(logit_model)
+vif(logit_model)
+hoslem.test(laryngoscope_data$attempt1_S_F[1:length(fitted(logit_model))], 
+            fitted(logit_model))
+
+AIC(logit_model)
+BIC(logit_model)
+```
+
+
+```{r S_F Model}
+lm_mod <- lm(attempt1_time ~ age + BMI + as.factor(asa) + as.factor(Mallampati) + as.factor(Randomization), data = lary)
+summary(lm_mod)
+
+# using a linear model to predict attempt1_time
+# I think a survival analysis might be more apt
+# But I don't really know how to use them
+
+plot(lm_mod)
+shapiro.test(residuals(lm_mod))
+boxcox(lm_mod)
+plot(cooks.distance(lm_mod))
+
+# Shapiro test suggests that residuals aren't normal
+# but lambda = 0, is within the 95% CI of our boxcox
+
+# gender is the only significant predictor
+# I did check for interactions and found no significant ones
+```
+# Interpretation:
+Most of the predictors for each response variable seem insignificant to prediction
+Gender seems to be the only significant predictor. There are no interactions either
+I'm not sure how useful this information is. Probably not very :)
+
+
+## Looking at Ease
+How did the doctors feel about either method of intubation? I'll calculate another effect size to determine any differences
+```{r}
+lary %>% 
+   
+  ggplot(aes(x = factor(Randomization), y = ease, fill = factor(Randomization))) +
+  geom_boxplot() +
+    #scale_x_discrete(labels = c("0" = "Failure", "1" = "Success")) +  # Custom labels
+  theme_minimal()
+
+
+ggplot(lary, aes(x = ease, fill = Randomization)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ Randomization, scales = "free_y") +  # Separate plots side by side
+  theme_minimal()
+
+
+lary %>%
+  group_by(Randomization) %>%
+  summarise(
+    Mean = mean(ease, na.rm = TRUE),
+    SD = sd(ease, na.rm = TRUE)
+  )
+
+cohen.d(lary$ease ~ lary$Randomization)
+```
+# Interpretation:
+The reported effect size was 0.433, which indicates a slight difference in ease rating by group. Those using the new intubation
+reported that this method was harder than the control method. Though the cohen's d CI has a lower bound of 0.005 which would indicate
+hardly any difference
+
+## Conclusion:
+If there's no difference in the success rate, but doctors took longer and reported more difficulty when using the new intubation method, whats the point in changing what is standard practice. Based on this analysis I'd suggest using the traditional intubation method.
+
+
+## Redisgn Study:
+To improve the internal validity of this study, I would recommend that somehow adjust for each doctor's experience level.
+Also it's important that each doctor have at least some training in both intubation methods. There are a couple ways to ensure this
+1st method: When doctors first become elligible to conduct intubations in their training, they should be exposed to both methods
+2nd method: Alternitivly, we can block doctors by experience level, and provide a training period where some doctors get to learn how the
+Pentax AWS works.
+- In both cases the doctors should be randomly assigned to each intubation method, as they were in the initial study
+- If we want to randomly assign the patients instead, we need to make sure the doctors have been exposed to the Pentax AWS
